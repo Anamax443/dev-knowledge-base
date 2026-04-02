@@ -1,7 +1,7 @@
 # Dev Knowledge Base
 
 > Živý dokument. Aktualizuje se po každém projektu kdy přibyde ověřený poznatek.
-> Poslední aktualizace: duben 2026 (rezervace-app vlákno 01–07, architektonické principy)
+> Poslední aktualizace: duben 2026 (rezervace-app vlákno 01–07, architektonické principy, rotace klíčů, i18n)
 > Autor: Milan Trnka + Claude (Anthropic AI)
 
 ---
@@ -444,7 +444,37 @@ async function resolveApiKeys(env: Env): Promise<Record<string, string>> {
 
 ### Kontrola platnosti klíčů
 
-Udržovat `check-api-keys.ps1` v root projektu. Spouštět minimálně 1× týdně, u Fio tokenu ideálně denně.
+Udržovat `check-api-keys.ps1` v root každého projektu s externími API. Spouštět minimálně 1× týdně, u tokenů s rizikem tiché expirace ideálně denně.
+
+```powershell
+# Struktura check-api-keys.ps1
+param([string]$ApiKey1, [string]$ApiKey2, ...)
+
+# 1. Test každého klíče proti reálné službě
+# 2. Barevný výstup: [OK] zelená / [WARN] žlutá / [CHYBA] červená
+# 3. Souhrn na konci: počet chyb
+```
+
+### Plánovaná automatická kontrola (Task Scheduler)
+
+```powershell
+# Windows Task Scheduler — denní kontrola
+# 1. Klíče uložit do Windows Credential Manager nebo env proměnných
+# 2. Naplánovat: powershell -File D:\git\<projekt>\check-api-keys.ps1
+# 3. Logovat výstup: -File ... >> D:\git\logs\api-check.log
+# 4. Při CHYBA poslat notifikaci (email, webhook)
+```
+
+### Rotace klíčů — postup
+
+| Klíč | Kde rotovat | Postup po rotaci |
+|------|-------------|-----------------|
+| Supabase service key | Supabase Dashboard → Settings → API | `wrangler secret put` + `wrangler deploy` |
+| Resend API key | resend.com → API Keys | `wrangler secret put` + `wrangler deploy` |
+| Fio token | Fio IB → Nastavení → API | Aktualizovat ve VŠECH workerech které ho používají |
+| Interní auth token | Vlastní generování | `wrangler secret put` + `wrangler deploy` |
+
+**Pozor u Fio tokenu:** Používají ho typicky více workerů (polling + billing + admin). Při rotaci aktualizovat všechny najednou — jinak část workerů přestane fungovat.
 
 ---
 
@@ -631,6 +661,54 @@ localStorage('lang') — uložení preference jazyka
 ```
 
 Přepínač jazyka: text CS/EN (ne vlajky emoji — nefungují spolehlivě na Windows).
+
+**Struktura slovníku (`i18n.ts`):**
+```typescript
+const translations = {
+  cs: {
+    dashboard: 'Dashboard',
+    tenants: 'Tenanti',
+    loading: 'Načítám...',
+    noData: 'Žádné záznamy',
+    yes: 'Ano',
+    no: 'Ne',
+  },
+  en: {
+    dashboard: 'Dashboard',
+    tenants: 'Tenants',
+    loading: 'Loading...',
+    noData: 'No records',
+    yes: 'Yes',
+    no: 'No',
+  }
+};
+```
+
+**Runtime (`lang.js`):**
+```javascript
+window.getLang = () => localStorage.getItem('lang') || 'cs';
+window.t = (key) => translations[getLang()]?.[key] || key;
+window.setLang = (lang) => { localStorage.setItem('lang', lang); location.reload(); };
+
+// Aplikace překladů na DOM
+function applyTranslations() {
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    el.textContent = window.t(el.dataset.i18n);
+  });
+}
+document.addEventListener('DOMContentLoaded', applyTranslations);
+```
+
+**Přidání nového jazyka** — přidat blok do `i18n.ts` i `lang.js`:
+```typescript
+sk: { dashboard: 'Dashboard', tenants: 'N\u00e1jomn\u00edci', ... }
+```
+
+**Locale pro formátování dat:**
+```javascript
+function getLocale() { return window.getLang() === 'en' ? 'en-GB' : 'cs-CZ'; }
+// Použití: new Date().toLocaleDateString(getLocale())
+```
 
 ### Dynamický obsah (JS generated)
 
