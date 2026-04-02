@@ -1,7 +1,7 @@
 # Dev Knowledge Base
 
 > Živý dokument. Aktualizuje se po každém projektu kdy přibyde ověřený poznatek.
-> Poslední aktualizace: duben 2026 (rezervace-app vlákno 01–07)
+> Poslední aktualizace: duben 2026 (rezervace-app vlákno 01–07, architektonické principy)
 > Autor: Milan Trnka + Claude (Anthropic AI)
 
 ---
@@ -20,6 +20,7 @@
 10. [Frontend — Astro specifika](#10-frontend--astro-specifika)
 11. [Deployment workflow](#11-deployment-workflow)
 12. [Architektura — obecné principy](#12-architektura--obecné-principy)
+13. [Modulární architektura — loose coupling](#13-modulární-architektura--loose-coupling)
 
 ---
 
@@ -756,6 +757,94 @@ JSX, Astro, Vue templates: používat přímo Unicode znaky nebo emoji, ne HTML 
 - [ ] `git log --oneline -3` zkontrolován
 - [ ] Validovaný hash zapsán do `known_good.md`
 - [ ] Dokumentace aktualizována
+
+---
+
+## 13. Modulární architektura — loose coupling
+
+### Základní princip
+
+Každý modul musí být schopen fungovat samostatně. Pokud jeden modul selže, ostatní pokračují.
+
+```
+❌ Modul A volá interní funkci Modulu B
+✅ Modul A volá definované rozhraní (API endpoint, DB tabulka, event)
+```
+
+### Failure mode — povinná definice
+
+Každý modul musí mít definovaný failure mode: co se stane když selže závislost?
+
+**Vedlejší operace nikdy nesmí blokovat hlavní flow:**
+
+```typescript
+// ŠPATNĚ — email blokuje billing
+await processBilling(tenant);
+await sendEmail(tenant);          // pokud selže → billing se tváří jako chyba
+
+// SPRÁVNĚ — email je vedlejší, billing proběhne vždy
+await processBilling(tenant);
+try {
+  await sendEmail(tenant);
+} catch (err) {
+  await logError('email_failed', err);  // tiché selhání, zalogovat
+}
+```
+
+### Hierarchie závislostí
+
+```
+Kritické (musí fungovat):
+  └── databáze, hlavní business logika
+
+Důležité (degradovaný stav bez nich):
+  └── platební párování, auth
+
+Vedlejší (tiché selhání OK):
+  └── email notifikace, event log, image optimizer
+```
+
+### Praktické příklady
+
+| Situace | Správné chování |
+|---------|-----------------|
+| Resend nefunguje | Billing proběhne, email se nezašle, zaloguje se |
+| image-optimizer nefunguje | Akce se zobrazí bez obrázku |
+| Event Log selže | Hlavní operace proběhne, log se nezapíše |
+| fio-polling selže | Rezervace stále přijímá objednávky, párování počká |
+
+### Komunikace mezi moduly
+
+Moduly spolu komunikují přes:
+- **REST API endpoint** (definovaný kontrakt)
+- **Databázová tabulka** (sdílená data)
+- **Event / log záznam** (asynchronní notifikace)
+
+Ne přímým voláním interních funkcí jiného modulu.
+
+### Health check jako standard
+
+Každý modul implementuje `GET /health` — umožňuje centrální monitoring bez závislosti na implementaci:
+
+```typescript
+if (path === '/health') {
+  return Response.json({ status: 'ok', module: 'nazev', timestamp: new Date().toISOString() });
+}
+```
+
+### Graceful degradation v UI
+
+Frontend musí počítat s tím, že backend modul neodpovídá:
+
+```javascript
+// Vždy ošetřit timeout a chybu — zobrazit degradovaný stav, ne prázdnou stránku
+try {
+  const data = await fetchWithTimeout(url, 5000);
+  renderData(data);
+} catch {
+  renderFallback();   // zobrazit cached data nebo prázdný stav s vysvětlením
+}
+```
 
 ---
 
